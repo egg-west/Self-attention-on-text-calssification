@@ -59,6 +59,6 @@ python selfAtt.py --lr 0.03 --dataset toy --max_epoch 5 --batch_size 60 --self_a
 
 ### TODO
 
-- Add penalty
+- [x] Add penalty
 
 
