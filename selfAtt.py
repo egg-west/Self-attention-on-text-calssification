@@ -51,7 +51,7 @@ def create_birnn(runit_forward,runit_backward, name=''):
     return BiRnn
 
 
-def build_graph(x, self_attention, embeded_dim = 60, h_dim = 150, d_a = 350, r = 30):
+def build_graph( self_attention, self_penalty, embeded_dim = 60, h_dim = 150, d_a = 350, r = 30):
     
     with C.layers.default_options(init = C.xavier()):
         embeded = C.layers.Embedding(embeded_dim)(x )
@@ -59,25 +59,38 @@ def build_graph(x, self_attention, embeded_dim = 60, h_dim = 150, d_a = 350, r =
 
         H = create_birnn(C.layers.GRU(h_dim), C.layers.GRU(h_dim))(embeded)
 
-        if self_attention == True:
+        if self_attention :
             Ws1 = C.parameter(shape=(d_a, 2 * h_dim), name="Ws1")
             Ws2 = C.parameter(shape=(r, d_a), name="Ws2")
             A = C.softmax( C.times( Ws2, C.tanh(C.times_transpose(Ws1, H)) ))
             H = C.times(A, H)# the M in the paper
 
+            if self_penalty :
+                I = C.constant(np.eye(r), dtype = np.float32)
+                P = C.times_transpose(A, A) - I# r*r
+                p = C.reduce_sum(C.abs(C.element_times(P, P) )) # frobenius norm **2
+
         y_ = C.layers.Dense(200, activation = C.ops.relu )(H)
-        y_pre = C.layers.Dense(num_labels, activation = None)(y_)
-        return y_pre
+        # y_pre = C.layers.Dense(num_labels, activation = None)(y_)
+        def selfAtt(x):
+            y_pre = C.layers.Dense(num_labels, activation = None)(y_)
+            return y_pre
+        if self_penalty:
+            selfAtt.p = p
+        return selfAtt
     
 
-def create_criterion_function(model, labels):
-    loss = C.cross_entropy_with_softmax(model, labels)
-    errs = C.classification_error(model, labels)
+def create_criterion_function(model, y_pre, labels, self_penalty):
+    loss = C.cross_entropy_with_softmax(y_pre, labels)
+    if self_penalty:
+        p_coefficient = 1
+        loss += model.p * p_coefficient
+    errs = C.classification_error(y_pre, labels)
     return loss, errs # (model, labels) -> (loss, error metric)
 
 def train( model, reader):
-
-    loss, label_error = create_criterion_function(model, y)
+    y_pre = model(x)
+    loss, label_error = create_criterion_function(model, y_pre, y, True)
     lr_per_minibatch = [lr] + [lr/2] + [lr/4]
     # lr_per_minibatch = [lr * batch_size for lr in lr_per_sample]
     
@@ -87,10 +100,10 @@ def train( model, reader):
     momentums = C.momentum_schedule(0.9048374180359595, minibatch_size=batch_size)
     progress_printer = C.logging.ProgressPrinter(tag='Training', num_epochs=max_epoch)
     # learner = C.sgd(model.parameters, lr_schedule)
-    learner = C.adam( model.parameters, lr_schedule, momentum = momentums, gradient_clipping_threshold_per_sample=15)
-    trainer = C.Trainer(model, (loss, label_error), learner, progress_printer)# []
+    learner = C.adam( y_pre.parameters, lr_schedule, momentum = momentums, gradient_clipping_threshold_per_sample=15)
+    trainer = C.Trainer(y_pre, (loss, label_error), learner, progress_printer)# []
 
-    C.logging.log_number_of_parameters(model)# print # parameters and # tensor
+    C.logging.log_number_of_parameters(y_pre)# print # parameters and # tensor
 
     loss_summary = []
     step = 0
@@ -162,7 +175,7 @@ def main():
     global x, y
     x = C.sequence.input_variable(num_vocabs)
     y = C.input_variable(num_labels)
-    model = build_graph(x, args.self_attention)
+    model = build_graph( args.self_attention, self_penalty=True)
     
     train( model, train_reader)
     
